@@ -658,6 +658,51 @@ impl brep_protocol::Kernel for Arris {
         })
     }
 
+    /// arris's mesher with its render block: each face's own vertices with the surface's outward
+    /// normal, and each edge's polyline. Every edge it draws is returned, seams included.
+    fn display(&self, s: &Solid, tolerance: f64) -> Result<brep_protocol::Display, Refusal> {
+        let Some(s) = *s else {
+            return Ok(brep_protocol::Display::default());
+        };
+        let m = self.0.lock().unwrap();
+        let request = arris::mesh::MeshRequest::new(tolerance).with_corners();
+        let mesh = arris::mesh::tessellate_with(&m, s, &request, NONE).map_err(err)?;
+        let corners = mesh
+            .corners()
+            .ok_or_else(|| Refusal::failed("the mesher gave no render block"))?;
+        let faces = mesh
+            .faces()
+            .iter()
+            .zip(corners.faces())
+            .map(|(face, local)| {
+                let first = local.vertices.start as u32;
+                brep_protocol::DisplayFace {
+                    positions: local
+                        .vertices
+                        .clone()
+                        .map(|v| mesh.positions()[corners.positions()[v] as usize])
+                        .collect(),
+                    normals: corners.normals()[local.vertices.clone()].to_vec(),
+                    triangles: corners.triangles()[face.triangles.clone()]
+                        .iter()
+                        .map(|t| t.map(|v| v - first))
+                        .collect(),
+                }
+            })
+            .collect();
+        let edges = mesh
+            .edges()
+            .iter()
+            .map(|e| {
+                mesh.edge_indices()[e.indices.clone()]
+                    .iter()
+                    .map(|&v| mesh.positions()[v as usize])
+                    .collect()
+            })
+            .collect();
+        Ok(brep_protocol::Display { faces, edges })
+    }
+
     fn write_step(&self, s: &Solid) -> Result<String, Refusal> {
         let Some(s) = *s else {
             return Err("an empty solid has no STEP".into());
@@ -798,7 +843,6 @@ impl brep_protocol::Kernel for Arris {
             "chamfer_two",
             "curvature",
             "project",
-            "display",
             "slab",
             "affine",
             "offset",
