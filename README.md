@@ -37,6 +37,10 @@ point. What the checker left unchecked is reported with its violations.
 A screw is arris's sweep along a helix with its binormal held along the axis, and a sweep along a
 spline is its sweep along a NURBS path, in its rotation-minimizing frame.
 
+A display is one call of arris's mesher with its render block: each face's own vertices with the
+surface's outward normals, and the polyline of every edge it meshes. That includes seams and the
+edges on a ball, which the protocol's display leaves out.
+
 Listed as unsupported, since arris 0.10 has no one call of the protocol's shape for it: the sphere,
 torus and cone constructors (the suite sends each as a revolution where a case only starts from
 one), slabs, drafts, the offset of a whole solid, stretches and shears, blends of unequal or varying
