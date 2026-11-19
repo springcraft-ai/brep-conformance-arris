@@ -659,7 +659,7 @@ impl brep_protocol::Kernel for Arris {
     }
 
     /// arris's mesher with its render block: each face's own vertices with the surface's outward
-    /// normal, and each edge's polyline. Every edge it draws is returned, seams included.
+    /// normal, and the polyline of each edge it draws between two faces.
     fn display(&self, s: &Solid, tolerance: f64) -> Result<brep_protocol::Display, Refusal> {
         let Some(s) = *s else {
             return Ok(brep_protocol::Display::default());
