@@ -690,9 +690,22 @@ impl brep_protocol::Kernel for Arris {
                 }
             })
             .collect();
+        // The protocol's edges are those between two faces: a seam, used twice by one face, and an
+        // edge between two faces of one surface draw no line on the solid.
+        let between_faces = |e: &arris::mesh::EdgeRange| {
+            let Ok(uses) = m.edge_uses(e.edge) else {
+                return true;
+            };
+            let surface = |u: &arris::topo::CoedgeRef| m.face(u.face).ok().map(|f| f.surface());
+            match uses {
+                [a, b] => a.face != b.face && surface(a) != surface(b),
+                _ => uses.len() > 2,
+            }
+        };
         let edges = mesh
             .edges()
             .iter()
+            .filter(|e| between_faces(e))
             .map(|e| {
                 mesh.edge_indices()[e.indices.clone()]
                     .iter()
