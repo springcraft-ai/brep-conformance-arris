@@ -8,4 +8,4 @@ publish = false
 
 [dependencies]
 arris = "=0.10.0"
-brep-protocol = "1"
+brep-protocol = "2"

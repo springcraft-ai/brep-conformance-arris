@@ -38,10 +38,14 @@ A screw is arris's sweep along a helix with its binormal held along the axis, an
 spline is its sweep along a NURBS path, in its rotation-minimizing frame.
 
 A display is one call of arris's mesher with its render block: each face's own vertices with the
-surface's outward normals, and the polyline of each edge it meshes between two faces. A seam, which
-arris's topology lists as used twice by one face, and an edge between two faces on one surface are
-left out, as the protocol's display asks; the choice is arris's own edge uses, with no number of the
-adapter's.
+surface's outward normals, and the polyline of each edge it meshes. Each edge comes with the faces
+of the solid that use it, by arris's own edge uses. An edge's polyline runs through vertices that
+both of its faces have, so the turn along it is the angle between the normals the block gives the
+two faces there, positive where the edge is convex. A seam, which one face uses twice, is listed
+apart from the edges, and an edge one face uses once, a pole or an apex, is left out. Two faces
+whose normals agree all along an edge, to within 1e-9, are flagged as a split where arris's
+intersection of their two surfaces says the surfaces coincide. That 1e-9 is the adapter's one
+number here: it decides only which edges arris is asked about, not the answer.
 
 Listed as unsupported, since arris 0.10 has no one call of the protocol's shape for it: the sphere,
 torus and cone constructors (the suite sends each as a revolution where a case only starts from
