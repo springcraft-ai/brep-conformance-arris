@@ -26,7 +26,8 @@ maintains it.
 
 [`src/main.rs`](src/main.rs) answers each function with arris's one call for it, as
 [the contract](https://github.com/springcraft-ai/brep-conformance/blob/main/doc/contract.md#what-an-adapter-may-do)
-asks, and lists the rest as unsupported. It builds the suite's box and cylinder with arris's
+asks, and offers only those: `supports` lists them, and the suite scores a case that needs any
+other as unsupported. It builds the suite's box and cylinder with arris's
 primitives, each at the origin and moved onto its frame; extrusions, revolutions, lofts and sweeps
 with arris's own, sweeps along its paths of lines and arcs. It answers the booleans, the booleans of
 many, mass properties, the full validity check, classification, the nearest point, distance, ray
@@ -38,12 +39,17 @@ A screw is arris's sweep along a helix with its binormal held along the axis, an
 spline is its sweep along a NURBS path, in its rotation-minimizing frame.
 
 A display is one call of arris's mesher with its render block: each face's own vertices with the
-surface's outward normals, and the polyline of each edge it meshes between two faces. A seam, which
-arris's topology lists as used twice by one face, and an edge between two faces on one surface are
-left out, as the protocol's display asks; the choice is arris's own edge uses, with no number of the
-adapter's.
+surface's outward normals, and the polyline of each edge it meshes. Each edge comes with the faces
+of the solid that use it, by arris's own edge uses. An edge's polyline runs through vertices that
+both of its faces have, so the turn along it is the angle between the two normals the block gives
+there, positive where the edge is convex; a vertex where a face has several normals, as at an apex,
+gives none. A seam, which one face uses twice, is listed apart from the edges, and an edge one face
+uses once, a pole or an apex, is left out. An edge is flagged as a split where arris has its two
+faces on one surface. Two faces arris holds on surfaces of their own are not flagged, though the
+surfaces be the same plane: the adapter does not compare them. All of this is arris's own
+statements, with no number of the adapter's.
 
-Listed as unsupported, since arris 0.10 has no one call of the protocol's shape for it: the sphere,
+Left out of `supports`, since arris 0.10 has no one call of the protocol's shape for it: the sphere,
 torus and cone constructors (the suite sends each as a revolution where a case only starts from
 one), slabs, drafts, the offset of a whole solid, stretches and shears, blends of unequal or varying
 size in one operation, a twisted sweep, face deletes, moves and thickens, sewing, curvatures at a

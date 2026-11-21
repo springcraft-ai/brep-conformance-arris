@@ -1,9 +1,9 @@
 //! The arris adapter: answers the B-rep protocol's requests on stdin and stdout, so the
 //! conformance suite can drive this kernel.
 
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 use std::process::ExitCode;
-use std::sync::Mutex;
 
 use arris::Control;
 use arris::check::{Classification, Classifier, Level, check};
@@ -23,7 +23,7 @@ use arris::topo::provenance::Provenance;
 use arris::topo::{Body, Edge, Face, Model, Shape};
 use brep_protocol::{Meeting, Refusal, model, model::PathSeg, model::Primitive, profile};
 
-struct Arris(Mutex<Model>);
+struct Arris(Model);
 
 const NONE: &Control<'_> = &Control::NONE;
 
@@ -109,6 +109,11 @@ fn sketch(p: &profile::Profile, plane: Frame) -> Result<Profile, Refusal> {
                 profile::Seg::Gn { .. } => {
                     return Err(Refusal::unsupported(
                         "arris profiles have no blend-section segment",
+                    ));
+                }
+                _ => {
+                    return Err(Refusal::unsupported(
+                        "the adapter does not know this kind of profile segment",
                     ));
                 }
             }
@@ -214,12 +219,13 @@ fn make(m: &mut Model, p: &Primitive) -> Result<Body, Refusal> {
         Primitive::Loft {
             frame,
             profile,
-            scale,
             height,
+            top,
+            ..
         } => {
             let sections = [
                 sketch(profile, plane_xy(frame, 0.0)?)?,
-                sketch(&profile.scaled(*scale), plane_xy(frame, *height)?)?,
+                sketch(top, plane_xy(frame, *height)?)?,
             ];
             return Ok(loft(m, &sections, LoftKind::Ruled, false, NONE)
                 .map_err(err)?
@@ -415,28 +421,28 @@ impl brep_protocol::Kernel for Arris {
     }
 
     fn tolerance(&self) -> f64 {
-        self.0.lock().unwrap().precision().default_tolerance
+        self.0.precision().default_tolerance
     }
 
-    fn make(&self, p: &Primitive) -> Result<Solid, Refusal> {
-        make(&mut self.0.lock().unwrap(), p).map(Some)
+    fn make(&mut self, p: &Primitive) -> Result<Solid, Refusal> {
+        make(&mut self.0, p).map(Some)
     }
 
-    fn union(&self, a: &Solid, b: &Solid) -> Result<Solid, Refusal> {
-        boolean(&mut self.0.lock().unwrap(), Bool::Fuse, *a, *b)
+    fn union(&mut self, a: &Solid, b: &Solid) -> Result<Solid, Refusal> {
+        boolean(&mut self.0, Bool::Fuse, *a, *b)
     }
 
-    fn intersection(&self, a: &Solid, b: &Solid) -> Result<Solid, Refusal> {
-        boolean(&mut self.0.lock().unwrap(), Bool::Common, *a, *b)
+    fn intersection(&mut self, a: &Solid, b: &Solid) -> Result<Solid, Refusal> {
+        boolean(&mut self.0, Bool::Common, *a, *b)
     }
 
-    fn difference(&self, a: &Solid, b: &Solid) -> Result<Solid, Refusal> {
-        boolean(&mut self.0.lock().unwrap(), Bool::Cut, *a, *b)
+    fn difference(&mut self, a: &Solid, b: &Solid) -> Result<Solid, Refusal> {
+        boolean(&mut self.0, Bool::Cut, *a, *b)
     }
 
-    fn union_all(&self, solids: &[&Solid]) -> Result<Solid, Refusal> {
+    fn union_all(&mut self, solids: &[&Solid]) -> Result<Solid, Refusal> {
         let bodies: Vec<Body> = solids.iter().filter_map(|s| **s).collect();
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         match bodies.len() {
             0 => Ok(None),
             1 => Ok(Some(bodies[0])),
@@ -444,7 +450,7 @@ impl brep_protocol::Kernel for Arris {
         }
     }
 
-    fn difference_all(&self, target: &Solid, tools: &[&Solid]) -> Result<Solid, Refusal> {
+    fn difference_all(&mut self, target: &Solid, tools: &[&Solid]) -> Result<Solid, Refusal> {
         let Some(target) = *target else {
             return Ok(None);
         };
@@ -452,28 +458,28 @@ impl brep_protocol::Kernel for Arris {
         if tools.is_empty() {
             return Ok(Some(target));
         }
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         empty_or(cut_many(m, target, &tools, NONE))
     }
 
-    fn volume(&self, s: &Solid) -> Result<f64, Refusal> {
+    fn volume(&mut self, s: &Solid) -> Result<f64, Refusal> {
         let Some(s) = *s else { return Ok(0.0) };
-        let m = self.0.lock().unwrap();
-        mass_properties(&m, s, NONE).map(|p| p.volume).map_err(err)
+        let m = &self.0;
+        mass_properties(m, s, NONE).map(|p| p.volume).map_err(err)
     }
 
-    fn area(&self, s: &Solid) -> Result<f64, Refusal> {
+    fn area(&mut self, s: &Solid) -> Result<f64, Refusal> {
         let Some(s) = *s else { return Ok(0.0) };
-        let m = self.0.lock().unwrap();
-        surface_properties(&m, s, NONE).map(|p| p.area).map_err(err)
+        let m = &self.0;
+        surface_properties(m, s, NONE).map(|p| p.area).map_err(err)
     }
 
-    fn check(&self, s: &Solid) -> Result<Vec<String>, Refusal> {
+    fn check(&mut self, s: &Solid) -> Result<Vec<String>, Refusal> {
         let Some(s) = *s else {
             return Ok(Vec::new());
         };
-        let m = self.0.lock().unwrap();
-        let report = check(&m, s, Level::Full);
+        let m = &self.0;
+        let report = check(m, s, Level::Full);
         // What the checker could not decide is not shown valid.
         let undecided = report
             .unchecked()
@@ -487,12 +493,12 @@ impl brep_protocol::Kernel for Arris {
             .collect())
     }
 
-    fn classify(&self, s: &Solid, points: &[model::Vec3]) -> Result<Vec<model::Side>, Refusal> {
+    fn classify(&mut self, s: &Solid, points: &[model::Vec3]) -> Result<Vec<model::Side>, Refusal> {
         let Some(s) = *s else {
             return Ok(vec![model::Side::Out; points.len()]);
         };
-        let m = self.0.lock().unwrap();
-        let c = Classifier::of_body(&m, s).map_err(err)?;
+        let m = &self.0;
+        let c = Classifier::of_body(m, s).map_err(err)?;
         points
             .iter()
             .map(|&p| {
@@ -505,44 +511,44 @@ impl brep_protocol::Kernel for Arris {
             .collect()
     }
 
-    fn closest(&self, s: &Solid, points: &[model::Vec3]) -> Result<Vec<model::Vec3>, Refusal> {
+    fn closest(&mut self, s: &Solid, points: &[model::Vec3]) -> Result<Vec<model::Vec3>, Refusal> {
         let Some(s) = *s else {
             return Err("an empty solid has no nearest point".into());
         };
-        let m = self.0.lock().unwrap();
+        let m = &self.0;
         points
             .iter()
             .map(|&p| {
                 let body = Operand::Shape(Shape::from(s));
-                let d = distance(&m, Operand::Point(p3(p)), body, NONE).map_err(err)?;
+                let d = distance(m, Operand::Point(p3(p)), body, NONE).map_err(err)?;
                 Ok([d.b.point.x, d.b.point.y, d.b.point.z])
             })
             .collect()
     }
 
-    fn centroid(&self, s: &Solid) -> Result<Option<model::Vec3>, Refusal> {
+    fn centroid(&mut self, s: &Solid) -> Result<Option<model::Vec3>, Refusal> {
         let Some(s) = *s else { return Ok(None) };
-        let m = self.0.lock().unwrap();
-        let p = mass_properties(&m, s, NONE).map_err(err)?;
+        let m = &self.0;
+        let p = mass_properties(m, s, NONE).map_err(err)?;
         Ok(Some([p.centroid.x, p.centroid.y, p.centroid.z]))
     }
 
-    fn inertia(&self, s: &Solid) -> Result<[[f64; 3]; 3], Refusal> {
+    fn inertia(&mut self, s: &Solid) -> Result<[[f64; 3]; 3], Refusal> {
         let Some(s) = *s else {
             return Ok([[0.0; 3]; 3]);
         };
-        let m = self.0.lock().unwrap();
-        let p = mass_properties(&m, s, NONE).map_err(err)?;
+        let m = &self.0;
+        let p = mass_properties(m, s, NONE).map_err(err)?;
         Ok([0, 1, 2].map(|i| [0, 1, 2].map(|j| p.inertia[(i, j)])))
     }
 
-    fn distance(&self, a: &Solid, b: &Solid) -> Result<f64, Refusal> {
+    fn distance(&mut self, a: &Solid, b: &Solid) -> Result<f64, Refusal> {
         let (Some(a), Some(b)) = (*a, *b) else {
             return Err("the distance to an empty solid is undefined".into());
         };
-        let m = self.0.lock().unwrap();
+        let m = &self.0;
         let d = distance(
-            &m,
+            m,
             Operand::Shape(Shape::from(a)),
             Operand::Shape(Shape::from(b)),
             NONE,
@@ -551,54 +557,54 @@ impl brep_protocol::Kernel for Arris {
         Ok(d.distance)
     }
 
-    fn raycast(&self, s: &Solid, o: model::Vec3, d: model::Vec3) -> Result<Vec<f64>, Refusal> {
+    fn raycast(&mut self, s: &Solid, o: model::Vec3, d: model::Vec3) -> Result<Vec<f64>, Refusal> {
         let Some(s) = *s else { return Ok(Vec::new()) };
-        let m = self.0.lock().unwrap();
+        let m = &self.0;
         let ray = Ray {
             origin: p3(o),
             direction: v3(d),
         };
-        let hits = ray_fire(&m, s, &ray, RayHits::All).map_err(err)?;
+        let hits = ray_fire(m, s, &ray, RayHits::All).map_err(err)?;
         Ok(hits.iter().map(|h| h.t).collect())
     }
 
-    fn transform(&self, s: &Solid, matrix: [[f64; 4]; 3]) -> Result<Solid, Refusal> {
+    fn transform(&mut self, s: &Solid, matrix: [[f64; 4]; 3]) -> Result<Solid, Refusal> {
         let Some(s) = *s else { return Ok(None) };
-        moved(&mut self.0.lock().unwrap(), s, matrix).map(Some)
+        moved(&mut self.0, s, matrix).map(Some)
     }
 
-    fn fillet(&self, s: &Solid, edges: &[model::Vec3], radius: f64) -> Result<Solid, Refusal> {
+    fn fillet(&mut self, s: &Solid, edges: &[model::Vec3], radius: f64) -> Result<Solid, Refusal> {
         let Some(s) = *s else {
             return Err("nothing to fillet".into());
         };
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let found = edges_at(m, s, edges)?;
         Ok(Some(fillet(m, s, &found, radius, NONE).map_err(err)?.0))
     }
 
-    fn chamfer(&self, s: &Solid, edges: &[model::Vec3], d: f64) -> Result<Solid, Refusal> {
+    fn chamfer(&mut self, s: &Solid, edges: &[model::Vec3], d: f64) -> Result<Solid, Refusal> {
         let Some(s) = *s else {
             return Err("nothing to chamfer".into());
         };
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let found = edges_at(m, s, edges)?;
         Ok(Some(chamfer(m, s, &found, d, NONE).map_err(err)?.0))
     }
 
-    fn offset_faces(&self, s: &Solid, faces: &[model::Vec3], d: f64) -> Result<Solid, Refusal> {
+    fn offset_faces(&mut self, s: &Solid, faces: &[model::Vec3], d: f64) -> Result<Solid, Refusal> {
         let Some(s) = *s else {
             return Err("nothing to offset".into());
         };
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let found = faces_at(m, s, faces)?;
         Ok(Some(offset_faces(m, s, &found, d, NONE).map_err(err)?.0))
     }
 
-    fn shell(&self, s: &Solid, open: &[model::Vec3], t: f64) -> Result<Solid, Refusal> {
+    fn shell(&mut self, s: &Solid, open: &[model::Vec3], t: f64) -> Result<Solid, Refusal> {
         let Some(s) = *s else {
             return Err("nothing to shell".into());
         };
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let found = faces_at(m, s, open)?;
         Ok(Some(
             shell(m, s, &found, t, ShellSide::Inward, NONE)
@@ -608,14 +614,14 @@ impl brep_protocol::Kernel for Arris {
     }
 
     fn normal(
-        &self,
+        &mut self,
         s: &Solid,
         points: &[model::Vec3],
     ) -> Result<Vec<Option<model::Vec3>>, Refusal> {
         let Some(s) = *s else {
             return Ok(vec![None; points.len()]);
         };
-        let m = self.0.lock().unwrap();
+        let m = &self.0;
         let faces = m.faces(s).map_err(err)?;
         // arris gives a normal on one face at its parameters. The point names the face and the
         // parameters by arris's own distance query; a point several faces pass through, on an
@@ -626,7 +632,7 @@ impl brep_protocol::Kernel for Arris {
                 let on: Vec<(Face, FootParam)> = faces
                     .iter()
                     .filter_map(|&f| {
-                        let d = distance(&m, Operand::Point(p3(p)), Operand::Shape(f.into()), NONE)
+                        let d = distance(m, Operand::Point(p3(p)), Operand::Shape(f.into()), NONE)
                             .ok()?;
                         (d.distance <= 1e-6).then_some((f, d.b.param))
                     })
@@ -634,7 +640,7 @@ impl brep_protocol::Kernel for Arris {
                 match on[..] {
                     [] => Ok(None),
                     [(f, FootParam::Face(uv))] => {
-                        let frame = frame_at(&m, f, uv).map_err(err)?;
+                        let frame = frame_at(m, f, uv).map_err(err)?;
                         let n = frame.z().into_inner();
                         Ok(Some([n.x, n.y, n.z]))
                     }
@@ -646,27 +652,30 @@ impl brep_protocol::Kernel for Arris {
             .collect()
     }
 
-    fn mesh(&self, s: &Solid, tolerance: f64) -> Result<brep_protocol::Mesh, Refusal> {
+    fn mesh(&mut self, s: &Solid, tolerance: f64) -> Result<brep_protocol::Mesh, Refusal> {
         let Some(s) = *s else {
             return Ok(brep_protocol::Mesh::default());
         };
-        let m = self.0.lock().unwrap();
-        let mesh = arris::mesh::tessellate(&m, s, tolerance, NONE).map_err(err)?;
-        Ok(brep_protocol::Mesh {
-            positions: mesh.positions().to_vec(),
-            triangles: mesh.triangles().to_vec(),
-        })
+        let m = &self.0;
+        let mesh = arris::mesh::tessellate(m, s, tolerance, NONE).map_err(err)?;
+        Ok(brep_protocol::Mesh::new(
+            mesh.positions().to_vec(),
+            mesh.triangles().to_vec(),
+        ))
     }
 
     /// arris's mesher with its render block: each face's own vertices with the surface's outward
-    /// normal, and the polyline of each edge it draws between two faces.
-    fn display(&self, s: &Solid, tolerance: f64) -> Result<brep_protocol::Display, Refusal> {
+    /// normal, and the polyline of each edge with the faces arris says use it. An edge's polyline
+    /// runs through vertices both of its faces have, so the turn along it is the angle between
+    /// the two normals the block gives there. A seam and a split are arris's own statements: one
+    /// face using the edge twice, and two faces on one of its surfaces.
+    fn display(&mut self, s: &Solid, tolerance: f64) -> Result<brep_protocol::Display, Refusal> {
         let Some(s) = *s else {
             return Ok(brep_protocol::Display::default());
         };
-        let m = self.0.lock().unwrap();
+        let m = &self.0;
         let request = arris::mesh::MeshRequest::new(tolerance).with_corners();
-        let mesh = arris::mesh::tessellate_with(&m, s, &request, NONE).map_err(err)?;
+        let mesh = arris::mesh::tessellate_with(m, s, &request, NONE).map_err(err)?;
         let corners = mesh
             .corners()
             .ok_or_else(|| Refusal::failed("the mesher gave no render block"))?;
@@ -676,56 +685,142 @@ impl brep_protocol::Kernel for Arris {
             .zip(corners.faces())
             .map(|(face, local)| {
                 let first = local.vertices.start as u32;
-                brep_protocol::DisplayFace {
-                    positions: local
+                brep_protocol::DisplayFace::new(
+                    local
                         .vertices
                         .clone()
                         .map(|v| mesh.positions()[corners.positions()[v] as usize])
                         .collect(),
-                    normals: corners.normals()[local.vertices.clone()].to_vec(),
-                    triangles: corners.triangles()[face.triangles.clone()]
+                    corners.normals()[local.vertices.clone()].to_vec(),
+                    corners.triangles()[face.triangles.clone()]
                         .iter()
                         .map(|t| t.map(|v| v - first))
                         .collect(),
-                }
+                )
             })
             .collect();
-        // The protocol's edges are those between two faces: a seam, used twice by one face, and an
-        // edge between two faces of one surface draw no line on the solid.
-        let between_faces = |e: &arris::mesh::EdgeRange| {
-            let Ok(uses) = m.edge_uses(e.edge) else {
-                return true;
-            };
-            let surface = |u: &arris::topo::CoedgeRef| m.face(u.face).ok().map(|f| f.surface());
-            match uses {
-                [a, b] => a.face != b.face && surface(a) != surface(b),
-                _ => uses.len() > 2,
-            }
-        };
-        let edges = mesh
-            .edges()
+        let index: HashMap<_, usize> = mesh
+            .faces()
             .iter()
-            .filter(|e| between_faces(e))
-            .map(|e| {
-                mesh.edge_indices()[e.indices.clone()]
+            .enumerate()
+            .map(|(k, f)| (f.face, k))
+            .collect();
+        // For each face, the normal it has at each mesh vertex, where it has one: at an apex each
+        // of its triangles has a vertex of its own there, and the face no one normal.
+        let normals: Vec<HashMap<u32, Option<model::Vec3>>> = corners
+            .faces()
+            .iter()
+            .map(|local| {
+                let mut at = HashMap::new();
+                for c in local.vertices.clone() {
+                    at.entry(corners.positions()[c])
+                        .and_modify(|n| *n = None)
+                        .or_insert(Some(corners.normals()[c]));
+                }
+                at
+            })
+            .collect();
+        // For each face, the way each of its triangles' sides runs. Triangles run
+        // counter-clockwise seen from outside, so a side runs with its face on the left.
+        let sides: Vec<HashSet<(u32, u32)>> = mesh
+            .faces()
+            .iter()
+            .map(|f| {
+                mesh.triangles()[f.triangles.clone()]
                     .iter()
-                    .map(|&v| mesh.positions()[v as usize])
+                    .flat_map(|t| (0..3).map(|i| (t[i], t[(i + 1) % 3])))
                     .collect()
             })
             .collect();
-        Ok(brep_protocol::Display { faces, edges })
+        let cross = |a: model::Vec3, b: model::Vec3| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let dot = |a: model::Vec3, b: model::Vec3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        // The angle between the normals of faces `a` and `b` over the polyline, least and
+        // greatest: about the way `a`'s side runs along it, a convex edge's normals turn by the
+        // right-hand rule.
+        let turn = |a: usize, b: usize, line: &[u32]| -> Option<[f64; 2]> {
+            let way = line.windows(2).find_map(|w| {
+                if sides[a].contains(&(w[0], w[1])) {
+                    Some(1.0)
+                } else if sides[a].contains(&(w[1], w[0])) {
+                    Some(-1.0)
+                } else {
+                    None
+                }
+            })?;
+            let mut range: Option<[f64; 2]> = None;
+            for (i, v) in line.iter().enumerate() {
+                let at = |k: usize| normals[k].get(v).copied().flatten();
+                let (Some(n), Some(o)) = (at(a), at(b)) else {
+                    continue;
+                };
+                let (p, q) = (line[i.saturating_sub(1)], line[(i + 1).min(line.len() - 1)]);
+                let along = [0, 1, 2]
+                    .map(|k| mesh.positions()[q as usize][k] - mesh.positions()[p as usize][k]);
+                let c = cross(n, o);
+                let angle = dot(c, c).sqrt().atan2(dot(n, o));
+                let t = if way * dot(c, along) < 0.0 {
+                    -angle
+                } else {
+                    angle
+                };
+                range = Some(range.map_or([t, t], |[lo, hi]: [f64; 2]| [lo.min(t), hi.max(t)]));
+            }
+            range
+        };
+        let mut edges = Vec::new();
+        let mut seams = Vec::new();
+        for e in mesh.edges() {
+            let line = &mesh.edge_indices()[e.indices.clone()];
+            let points: Vec<model::Vec3> =
+                line.iter().map(|&v| mesh.positions()[v as usize]).collect();
+            // An edge arris cannot say the uses of is drawn with nothing said of it.
+            let Ok(uses) = m.edge_uses(e.edge) else {
+                edges.push(brep_protocol::DisplayEdge::bare(points));
+                continue;
+            };
+            // The model lists an edge's uses in every body that shares it: these are this one's.
+            let uses: Vec<(usize, &arris::topo::CoedgeRef)> = uses
+                .iter()
+                .filter_map(|u| Some((*index.get(&u.face)?, u)))
+                .collect();
+            let pair = match uses[..] {
+                // An edge one face uses once is a pole or an apex of a solid, with no length.
+                [] | [_] => continue,
+                // A seam is one face using the edge twice.
+                [(a, _), (b, _)] if a == b => {
+                    seams.push(points);
+                    continue;
+                }
+                [(a, _), (b, _)] => Some((a, b)),
+                _ => None,
+            };
+            let surface = |u: &arris::topo::CoedgeRef| m.face(u.face).ok().map(|f| f.surface());
+            edges.push(brep_protocol::DisplayEdge::new(
+                points,
+                uses.iter().map(|&(k, _)| k as u32).collect(),
+                pair.and_then(|(a, b)| turn(a, b, line)),
+                pair.is_some() && surface(uses[0].1) == surface(uses[1].1),
+            ));
+        }
+        Ok(brep_protocol::Display::new(faces, edges, seams))
     }
 
-    fn write_step(&self, s: &Solid) -> Result<String, Refusal> {
+    fn write_step(&mut self, s: &Solid) -> Result<String, Refusal> {
         let Some(s) = *s else {
             return Err("an empty solid has no STEP".into());
         };
-        let m = self.0.lock().unwrap();
-        arris::io::step::write(&m, &[s]).map_err(err)
+        let m = &self.0;
+        arris::io::step::write(m, &[s]).map_err(err)
     }
 
-    fn read_step(&self, text: &str) -> Result<Solid, Refusal> {
-        let m = &mut *self.0.lock().unwrap();
+    fn read_step(&mut self, text: &str) -> Result<Solid, Refusal> {
+        let m = &mut self.0;
         let read = arris::io::step::read(m, text, &Default::default(), NONE).map_err(err)?;
         let bodies: Vec<Body> = read
             .solids
@@ -748,7 +843,7 @@ impl brep_protocol::Kernel for Arris {
     }
 
     fn loft_through(
-        &self,
+        &mut self,
         frame: &model::Frame,
         profiles: &[profile::Profile],
         heights: &[f64],
@@ -760,7 +855,7 @@ impl brep_protocol::Kernel for Arris {
                 heights.len()
             )));
         }
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let sections = profiles
             .iter()
             .zip(heights)
@@ -773,11 +868,11 @@ impl brep_protocol::Kernel for Arris {
         ))
     }
 
-    fn interference(&self, a: &Solid, b: &Solid) -> Result<Meeting, Refusal> {
+    fn interference(&mut self, a: &Solid, b: &Solid) -> Result<Meeting, Refusal> {
         let (Some(a), Some(b)) = (*a, *b) else {
             return Err("an empty solid meets nothing".into());
         };
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let (volume, gap) = match interference(m, a, b, NONE).map_err(err)? {
             Interference::Overlapping { volume, .. } => (volume, 0.0),
             Interference::Touching { .. } => (0.0, 0.0),
@@ -786,25 +881,25 @@ impl brep_protocol::Kernel for Arris {
         Ok(Meeting { volume, gap })
     }
 
-    fn reset(&self) {
-        *self.0.lock().unwrap() = Model::default();
+    fn reset(&mut self) {
+        self.0 = Model::default();
     }
 
     fn split(
-        &self,
+        &mut self,
         s: &Solid,
         origin: model::Vec3,
         normal: model::Vec3,
     ) -> Result<(Solid, Solid), Refusal> {
         let Some(s) = *s else { return Ok((None, None)) };
         let plane = plane_frame(origin, normal)?;
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let cut = arris::ops::split(m, s, &plane, NONE).map_err(err)?;
         Ok((Some(cut.positive), Some(cut.negative)))
     }
 
     fn section(
-        &self,
+        &mut self,
         s: &Solid,
         origin: model::Vec3,
         normal: model::Vec3,
@@ -812,7 +907,7 @@ impl brep_protocol::Kernel for Arris {
     ) -> Result<Vec<Vec<model::Vec3>>, Refusal> {
         let Some(s) = *s else { return Ok(Vec::new()) };
         let plane = plane_frame(origin, normal)?;
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         let Some(cut) = section(m, s, &plane, NONE).map_err(err)? else {
             return Ok(Vec::new());
         };
@@ -828,53 +923,63 @@ impl brep_protocol::Kernel for Arris {
     }
 
     fn section_area(
-        &self,
+        &mut self,
         s: &Solid,
         origin: model::Vec3,
         normal: model::Vec3,
     ) -> Result<f64, Refusal> {
         let Some(s) = *s else { return Ok(0.0) };
         let plane = plane_frame(origin, normal)?;
-        let m = &mut *self.0.lock().unwrap();
+        let m = &mut self.0;
         Ok(section(m, s, &plane, NONE)
             .map_err(err)?
             .map_or(0.0, |c| c.area))
     }
 
-    fn unsupported(&self) -> Vec<String> {
+    /// What arris 0.10 has one call of the protocol's shape for. Two operations arris reaches in
+    /// its own way are left out with those it does not have, since the adapter does not assemble
+    /// them: the bounding box, where arris gives boxes round control points and mesh vertices and
+    /// the protocol asks for the least box, and the Betti numbers, where arris gives lumps, voids
+    /// and a genus and the protocol counts solids that touch as one piece.
+    fn supports(&self) -> Vec<String> {
         [
-            // Operations arris 0.10 does not have.
-            "fillet_g2",
-            "fillet_conic",
-            "fillet_setback",
-            "fillet_setback_g2",
-            "fillet_faces",
-            "full_round",
-            "fillet_radii",
-            "fillet_variable",
-            "chamfer_distances",
-            "chamfer_two",
-            "curvature",
-            "project",
-            "slab",
-            "affine",
-            "offset",
-            "draft",
-            "delete_faces",
-            "move_faces",
-            "thicken",
-            "sew",
-            "sphere",
-            "torus",
-            "cone",
-            // Operations arris reaches in its own way, where the protocol asks for one call of
-            // another shape. The adapter does not assemble them, so that what is scored is arris.
-            // arris gives boxes round control points and mesh vertices; the protocol asks for the
-            // least box.
-            "bounding_box",
-            // arris gives lumps, voids and a genus; the protocol counts solids that touch as one
-            // piece.
-            "betti",
+            "box",
+            "cylinder",
+            "extrude",
+            "revolve",
+            "screw",
+            "loft",
+            "loft_through",
+            "sweep",
+            "sweep_path",
+            "union",
+            "intersection",
+            "difference",
+            "union_all",
+            "difference_all",
+            "fillet",
+            "chamfer",
+            "offset_faces",
+            "shell",
+            "write_step",
+            "read_step",
+            "volume",
+            "area",
+            "classify",
+            "closest",
+            "normal",
+            "check",
+            "centroid",
+            "inertia",
+            "distance",
+            "interference",
+            "section_area",
+            "section",
+            "split",
+            "mesh",
+            "display",
+            "raycast",
+            "transform",
         ]
         .map(String::from)
         .to_vec()
@@ -882,7 +987,7 @@ impl brep_protocol::Kernel for Arris {
 }
 
 fn main() -> ExitCode {
-    match brep_protocol::serve(&Arris(Mutex::new(Model::default()))) {
+    match brep_protocol::serve(&mut Arris(Model::default())) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");
