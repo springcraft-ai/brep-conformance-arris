@@ -13,8 +13,9 @@ use arris::math::{Axis, Frame, Isometry, Point2, Point3, UnitVec3, Vec3};
 use arris::ops::measure::{mass_properties, surface_properties};
 use arris::ops::query::{
     FootParam, Interference, Operand, Ray, RayHits, distance, frame_at, interference, ray_fire,
+    tight_bounds,
 };
-use arris::ops::{BooleanReason, InputReason, LoftKind, OpError, Reason, ShellSide};
+use arris::ops::{BooleanReason, InputReason, LoftKind, OpError, QueryReason, Reason, ShellSide};
 use arris::ops::{
     chamfer, common, cut, cut_many, extrude, fillet, fuse, fuse_many, loft, offset_faces,
     primitive_box, primitive_cylinder, revolve, section, shell, sweep, transform,
@@ -29,11 +30,16 @@ const NONE: &Control<'_> = &Control::NONE;
 
 /// arris's error as the protocol's refusal. An operation's error carries its kind: an input or a
 /// result that is no solid is the request's fault, a pair of surfaces arris has no formula for is
-/// unsupported, and anything else is a failure.
+/// unsupported, and anything else is a failure. A tight box arris cannot certify is its own
+/// failure, not the request's.
 fn err<E: std::fmt::Display + 'static>(e: E) -> Refusal {
     let reason = e.to_string();
     match (&e as &dyn std::any::Any).downcast_ref::<OpError>() {
         Some(OpError::Unsupported { .. }) => Refusal::unsupported(reason),
+        Some(OpError::Degenerate {
+            reason: Reason::Query(QueryReason::BoundsUncertified),
+            ..
+        }) => Refusal::failed(reason),
         Some(
             OpError::InvalidInput { .. }
             | OpError::Degenerate { .. }
@@ -417,7 +423,7 @@ impl brep_protocol::Kernel for Arris {
     }
 
     fn version(&self) -> String {
-        "0.10.0".into()
+        "0.12.0".into()
     }
 
     fn tolerance(&self) -> f64 {
@@ -885,6 +891,18 @@ impl brep_protocol::Kernel for Arris {
         self.0 = Model::default();
     }
 
+    /// arris's tight box of the body: each side within its tolerance of a point of the body.
+    fn bounding_box(&mut self, s: &Solid) -> Result<[model::Vec3; 2], Refusal> {
+        let Some(s) = *s else {
+            return Err("an empty solid has no box".into());
+        };
+        let m = &self.0;
+        let b = tight_bounds(m, s.id.into(), NONE)
+            .map_err(err)?
+            .ok_or_else(|| Refusal::failed("arris gave the body no box"))?;
+        Ok([b.min, b.max])
+    }
+
     fn split(
         &mut self,
         s: &Solid,
@@ -936,11 +954,9 @@ impl brep_protocol::Kernel for Arris {
             .map_or(0.0, |c| c.area))
     }
 
-    /// What arris 0.10 has one call of the protocol's shape for. Two operations arris reaches in
-    /// its own way are left out with those it does not have, since the adapter does not assemble
-    /// them: the bounding box, where arris gives boxes round control points and mesh vertices and
-    /// the protocol asks for the least box, and the Betti numbers, where arris gives lumps, voids
-    /// and a genus and the protocol counts solids that touch as one piece.
+    /// What arris 0.12 has one call of the protocol's shape for. The Betti numbers are left out
+    /// with those it does not have, since the adapter does not assemble them: arris gives lumps,
+    /// voids and a genus, and the protocol counts solids that touch as one piece.
     fn supports(&self) -> Vec<String> {
         [
             "box",
@@ -976,6 +992,7 @@ impl brep_protocol::Kernel for Arris {
             "section_area",
             "section",
             "split",
+            "bounding_box",
             "mesh",
             "display",
             "raycast",

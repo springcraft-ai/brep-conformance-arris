@@ -7,5 +7,5 @@ description = "The arris adapter for the B-rep protocol the conformance suite dr
 publish = false
 
 [dependencies]
-arris = "=0.10.0"
+arris = "=0.12.0"
 brep-protocol = "2"

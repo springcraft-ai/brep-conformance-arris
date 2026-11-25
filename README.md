@@ -31,9 +31,11 @@ other as unsupported. It builds the suite's box and cylinder with arris's
 primitives, each at the origin and moved onto its frame; extrusions, revolutions, lofts and sweeps
 with arris's own, sweeps along its paths of lines and arcs. It answers the booleans, the booleans of
 many, mass properties, the full validity check, classification, the nearest point, distance, ray
-fire, meshes, STEP, fillets and chamfers, face pushes, shells, splits, plane sections, section areas
-and the interference of a pair with arris's own, naming edges and faces by arris's distance from the
-point. What the checker left unchecked is reported with its violations.
+fire, meshes, STEP, fillets and chamfers, face pushes, shells, splits, plane sections, section areas,
+the interference of a pair and the least box round a solid with arris's own, naming edges and faces
+by arris's distance from the point. The box is arris's tight box, each side within its tolerance of
+a point of the solid; a box arris cannot certify is refused as a failure. What the checker left
+unchecked is reported with its violations.
 
 A screw is arris's sweep along a helix with its binormal held along the axis, and a sweep along a
 spline is its sweep along a NURBS path, in its rotation-minimizing frame.
@@ -49,12 +51,12 @@ faces on one surface. Two faces arris holds on surfaces of their own are not fla
 surfaces be the same plane: the adapter does not compare them. All of this is arris's own
 statements, with no number of the adapter's.
 
-Left out of `supports`, since arris 0.10 has no one call of the protocol's shape for it: the sphere,
+Left out of `supports`, since arris 0.12 has no one call of the protocol's shape for it: the sphere,
 torus and cone constructors (the suite sends each as a revolution where a case only starts from
 one), slabs, drafts, the offset of a whole solid, stretches and shears, blends of unequal or varying
 size in one operation, a twisted sweep, face deletes, moves and thickens, sewing, curvatures at a
-point, the least bounding box (arris gives boxes round control points and mesh vertices), and Betti
-numbers (arris gives lumps, voids and a genus).
+point, and Betti numbers (arris gives lumps, voids and a genus, and counts lumps that touch apart,
+where the protocol counts them as one piece).
 
 arris moves a body rigidly in one call, so a scale and a mirror are refused. It reads each solid of
 a STEP file as a body of its own, so a file of several is refused.
